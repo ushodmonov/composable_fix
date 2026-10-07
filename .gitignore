@@ -1,0 +1,11 @@
+.DS_Store
+.composablefix/
+mod/.claude-plugin/types/
+mod/tsconfig.json
+
+# Android
+android/.gradle/
+android/.kotlin/
+android/build/
+android/*/build/
+android/local.properties

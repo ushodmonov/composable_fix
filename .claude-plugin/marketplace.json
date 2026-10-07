@@ -1,0 +1,16 @@
+{
+  "name": "composablefix",
+  "owner": {
+    "name": "ushodmonov"
+  },
+  "metadata": {
+    "description": "ComposableFix: fix Jetpack Compose UI from the running Android app with Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "composablefix",
+      "source": "./mod",
+      "description": "Report UI fixes from an Android emulator or device straight into your Claude Code session."
+    }
+  ]
+}
