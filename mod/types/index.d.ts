@@ -27,43 +27,32 @@ export type AndroidApp = {
   serial?: string | null
 }
 
-/** A report as the receiver prints it, one JSON line each. */
+/** A report as the receiver hands it to the mod, through the follower. */
 export type Incoming = {
   id: string
   comment: string
   screen: string
-  screenshot: string | null
-  /** In screen pixels. */
-  touch?: { x: number; y: number }
-  android?: AndroidApp
-  /** The element marked with `Modifier.fixable` under the touch, when there is one. */
-  element?: {
-    name: string
-    file: string
-    line: number
-  }
-  accessibility?: Accessibility | null
-}
-
-export type FixReport = {
-  id: string
-  comment: string
-  /** The `.fixable` name of what was pressed, when the app marks it. */
+  /** The `Modifier.fixable` name of what was pressed, when the app marks it. */
   element: string | null
-  accessibility: Accessibility | null
-  /** `path:line` of the element's declaration, relative to the project. */
+  /** `path:line` of the mark, relative to the session's folder. */
   source: string | null
-  screen: string
+  accessibility: Accessibility | null
   screenshot: string | null
+  /** The prompt: the comment, then the `[fix …]` line. */
+  prompt: string
   status: FixStatus
   receivedAt: number
   finishedAt: number | null
+}
+
+export type FixReport = Incoming & {
   /** Names of the files Claude edited for this report. */
   edited: string[]
 }
 
 export type Receiver = {
-  state: 'starting' | 'listening' | 'failed'
+  /** `standby`: another session in the same project receives its reports. `off`: no ComposableFix project here. */
+  state: 'starting' | 'listening' | 'standby' | 'off' | 'failed'
   detail: string
   /** Advice that stays in the pane: how to install adb, say. */
   notice?: string

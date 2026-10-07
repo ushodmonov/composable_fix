@@ -52,20 +52,24 @@ test("each app's requests go to the session of its project", async () => {
   }
 })
 
-test('of two sessions in the same project, the newer one gets the reports', async () => {
+test('of two sessions of one project the first gets the reports, until the other takes them', async () => {
   const hub = await hubOnAnyPort()
   const first = await session('first', ['dev.composablefix.tally'])
   const second = await session('second', ['dev.composablefix.tally'])
-  await join(hub.port, first.port, '/work/tally')
+  assert.deepEqual(await join(hub.port, first.port, '/work/tally', '/work/tally/android'), { receiving: true, holder: '/work/tally' })
   await new Promise(resolve => setTimeout(resolve, 5))
-  await join(hub.port, second.port, '/work/tally')
+  assert.deepEqual(await join(hub.port, second.port, '/work/tally/android', '/work/tally/android'), {
+    receiving: false,
+    holder: '/work/tally',
+  })
 
   try {
+    assert.equal((await ask(hub, '/status?id=r1&app=dev.composablefix.tally')).body.name, 'first')
+    assert.equal((await join(hub.port, second.port, '/work/tally/android', '/work/tally/android', true)).receiving, true)
     assert.equal((await ask(hub, '/status?id=r1&app=dev.composablefix.tally')).body.name, 'second')
 
-    // When it is gone, the earlier one gets them again.
+    // When it is gone, the first one gets them again.
     await new Promise(resolve => second.server.close(resolve))
-    hub.register(second.port, '/work/tally')
     assert.equal((await ask(hub, '/status?id=r1&app=dev.composablefix.tally')).body.name, 'first')
   } finally {
     hub.server.close()

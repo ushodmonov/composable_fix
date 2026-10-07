@@ -1,6 +1,6 @@
 {
   "name": "composablefix",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Long press any element of your Jetpack Compose app on an Android emulator or device, say what is wrong, and the report lands in this session as a prompt; a pane shows the queue until the fix is live.",
   "author": {
     "name": "ushodmonov"

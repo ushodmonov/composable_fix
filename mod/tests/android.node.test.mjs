@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 
-import { appFinder, parseHierarchy, sourceFinder } from '../server/android.mjs'
+import { appFinder, findProject, parseHierarchy, sourceFinder } from '../server/android.mjs'
 
 test('a node is named by its description, its text, and its id without the package', () => {
   const [root] = parseHierarchy(
@@ -80,6 +80,29 @@ test('an app is the project that declares its id, its namespace, or holds its pa
     assert.equal(isOurs('com.example'), false)
     assert.equal(isOurs('com.example.shopping'), false)
     assert.equal(isOurs('dev.composablefix.tally'), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a session's project is the Gradle build that uses ComposableFix, here or up to two levels below", () => {
+  const root = mkdtempSync(join(tmpdir(), 'composablefix-'))
+  const write = (path, text = '') => {
+    mkdirSync(dirname(join(root, path)), { recursive: true })
+    writeFileSync(join(root, path), text)
+  }
+  write('repo/android/settings.gradle.kts', 'include(":app")\n')
+  write('repo/android/app/build.gradle.kts', 'dependencies { debugImplementation("dev.composablefix:composablefix:0.1.0") }\n')
+  write('other/settings.gradle.kts', 'include(":app")\n')
+  write('other/app/build.gradle.kts', 'dependencies { implementation("androidx.core:core-ktx:1.17.0") }\n')
+
+  try {
+    assert.equal(findProject(join(root, 'repo')), join(root, 'repo/android'))
+    assert.equal(findProject(root), join(root, 'repo/android'))
+    assert.equal(findProject(join(root, 'repo/android')), join(root, 'repo/android'))
+    // A Gradle build that does not use it, and a module's own folder, are no project.
+    assert.equal(findProject(join(root, 'other')), null)
+    assert.equal(findProject(join(root, 'repo/android/app')), null)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

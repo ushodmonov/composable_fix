@@ -1,8 +1,8 @@
 // The hub: whichever session's receiver holds the port the apps send to (4747). Every receiver
-// also listens on a port of its own and registers it here; the hub hands each request from an
-// app to the session opened in that app's project, found by asking each session whether the
-// app's package is its project's. The newest such session wins, so a second session in the same
-// project takes the reports over. No dependencies.
+// also listens on a port of its own and registers it here with its project; the hub hands each
+// request from an app to a session of that app's project, found by asking each session whether
+// the app's package is its project's. Of the sessions of one project the first keeps the
+// reports, unless another takes them (/fix-take). No dependencies.
 import { createServer, request } from 'node:http'
 
 /** Who registers here; a hub that answers this is one of ours. */
@@ -44,15 +44,36 @@ const reply = (res, code, body) => {
 }
 
 export function createHub() {
-  // By port: { port, cwd, since, seen }.
+  // By port: { port, cwd, project, since, seen, taken }.
   const sessions = new Map()
   // By app: { port, at }.
   const placed = new Map()
 
-  /** Adds a session, or notes that it is still there. */
-  function register(port, cwd) {
+  /** The session that receives a project's reports: the last to take them, else the first. */
+  function holderOf(project) {
+    const ofProject = [...sessions.values()].filter(session => session.project === project)
+    const taken = ofProject.filter(session => session.taken > 0).sort((a, b) => b.taken - a.taken)
+    return taken[0] ?? ofProject.sort((a, b) => a.since - b.since)[0] ?? null
+  }
+
+  /**
+   * Adds a session, or notes that it is still there; `take` moves its project's reports to it.
+   * Says whether it receives them, and which session does.
+   */
+  function register(port, cwd, project, take = false) {
     const known = sessions.get(port)
-    sessions.set(port, { port, cwd, since: known?.since ?? Date.now(), seen: Date.now() })
+    const now = Date.now()
+    sessions.set(port, {
+      port,
+      cwd,
+      project,
+      since: known?.since ?? now,
+      seen: now,
+      taken: take ? now : (known?.taken ?? 0),
+    })
+    if (take) placed.clear()
+    const holder = holderOf(project)
+    return { receiving: holder?.port === port, holder: holder?.cwd ?? null }
   }
 
   function forget(port) {
@@ -60,21 +81,24 @@ export function createHub() {
     for (const [app, place] of placed) if (place.port === port) placed.delete(app)
   }
 
-  /** The newest session whose project the app is, or null; a session that does not answer is forgotten. */
+  /** The session that receives the app's reports, or null; a session that does not answer is forgotten. */
   async function ownerOf(app) {
     const known = placed.get(app)
     if (known && Date.now() - known.at < PLACED_MS && sessions.has(known.port)) return known.port
 
-    const newestFirst = [...sessions.values()].sort((a, b) => b.since - a.since)
-    for (const { port } of newestFirst) {
+    // One question per project, put to the session that holds it.
+    const projects = new Set([...sessions.values()].map(session => session.project))
+    for (const project of projects) {
+      const holder = holderOf(project)
+      if (!holder) continue
       try {
-        const { body } = await send(port, 'GET', `/owns?app=${encodeURIComponent(app)}`)
+        const { body } = await send(holder.port, 'GET', `/owns?app=${encodeURIComponent(app)}`)
         if (JSON.parse(body.toString('utf8')).owns === true) {
-          placed.set(app, { port, at: Date.now() })
-          return port
+          placed.set(app, { port: holder.port, at: Date.now() })
+          return holder.port
         }
       } catch {
-        forget(port)
+        forget(holder.port)
       }
     }
     placed.delete(app)
@@ -90,9 +114,8 @@ export function createHub() {
 
       if (req.method === 'POST' && url.pathname === '/hub/register') {
         try {
-          const { port, cwd } = JSON.parse(body?.toString('utf8') ?? '{}')
-          register(Number(port), String(cwd))
-          return reply(res, 200, { hub: HUB })
+          const { port, cwd, project, take } = JSON.parse(body?.toString('utf8') ?? '{}')
+          return reply(res, 200, { hub: HUB, ...register(Number(port), String(cwd), String(project ?? cwd), take === true) })
         } catch (error) {
           return reply(res, 400, { error: String(error) })
         }
@@ -124,11 +147,13 @@ export function createHub() {
 }
 
 /**
- * Registers a session's port with the hub on `hubPort`. Resolves when a hub took it; rejects with
- * `code` ECONNREFUSED when nothing holds the port, or `NOT_A_HUB` when something else does.
+ * Registers a session's port with the hub on `hubPort`; `take` moves its project's reports to it.
+ * Resolves with `{ receiving, holder }` when a hub took it; rejects with `code` ECONNREFUSED when
+ * nothing holds the port, or `NOT_A_HUB` when something else does.
  */
-export async function join(hubPort, port, cwd) {
-  const { status, body } = await send(hubPort, 'POST', '/hub/register', Buffer.from(JSON.stringify({ port, cwd })))
+export async function join(hubPort, port, cwd, project = cwd, take = false) {
+  const request = Buffer.from(JSON.stringify({ port, cwd, project, take }))
+  const { status, body } = await send(hubPort, 'POST', '/hub/register', request)
   let answer = null
   try {
     answer = JSON.parse(body.toString('utf8'))
@@ -136,4 +161,5 @@ export async function join(hubPort, port, cwd) {
   if (status !== 200 || answer?.hub !== HUB) {
     throw Object.assign(new Error(`port ${hubPort} is held by something else`), { code: 'NOT_A_HUB' })
   }
+  return { receiving: answer.receiving === true, holder: answer.holder ?? null }
 }

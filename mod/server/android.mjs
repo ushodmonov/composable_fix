@@ -4,10 +4,10 @@
 // finds a `.fixable` call's source file, which the app knows only by its package. No
 // dependencies beside adb itself.
 import { execFile } from 'node:child_process'
-import { accessSync, constants, readdirSync, readFileSync } from 'node:fs'
+import { accessSync, constants, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { homedir } from 'node:os'
-import { delimiter, join, sep } from 'node:path'
+import { delimiter, dirname, join, sep } from 'node:path'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
@@ -22,6 +22,8 @@ export function adbCandidates(env = process.env) {
     } catch {}
   }
 
+  // `none` keeps adb out entirely: the receiver's own tests set it.
+  if (env.COMPOSABLEFIX_ADB === 'none') return found
   if (env.COMPOSABLEFIX_ADB) add(env.COMPOSABLEFIX_ADB)
   for (const sdk of [env.ANDROID_HOME, env.ANDROID_SDK_ROOT]) {
     if (sdk) add(join(sdk, 'platform-tools', 'adb'))
@@ -140,6 +142,56 @@ export function parseHierarchy(xml) {
     if (!selfClosing) open.push(element)
   }
   return roots
+}
+
+const GRADLE_SETTINGS = ['settings.gradle.kts', 'settings.gradle']
+const GRADLE_BUILDS = ['build.gradle.kts', 'build.gradle']
+
+/** The folders under `dir`, the hidden and the built ones left out. */
+function folders(dir) {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && !SKIPPED.has(entry.name))
+      .map(entry => join(dir, entry.name))
+  } catch {
+    return []
+  }
+}
+
+const mentions = (path, pattern) => {
+  try {
+    return pattern.test(readFileSync(path, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether the Gradle build in `dir` uses ComposableFix: its settings, its version catalog or the
+ * build file of the build or of a module (up to two levels down) names it.
+ */
+export function usesComposableFix(dir) {
+  const named = /composablefix/i
+  if (!GRADLE_SETTINGS.some(name => existsSync(join(dir, name)))) return false
+  const files = [
+    ...GRADLE_SETTINGS.map(name => join(dir, name)),
+    join(dir, 'gradle', 'libs.versions.toml'),
+    ...[dir, ...folders(dir), ...folders(dir).flatMap(folders)].flatMap(module => GRADLE_BUILDS.map(name => join(module, name))),
+  ]
+  return files.some(file => mentions(file, named))
+}
+
+/**
+ * The ComposableFix project a session in `cwd` serves: the Gradle build in that folder, else the
+ * nearest one up to two levels below it, as in a repository with the app in `android/`. Null when
+ * there is none: such a session takes no reports.
+ */
+export function findProject(cwd) {
+  const children = folders(cwd)
+  for (const dir of [cwd, ...children, ...children.flatMap(folders)]) {
+    if (usesComposableFix(dir)) return dir
+  }
+  return null
 }
 
 // Folders that hold no sources of the app's own.

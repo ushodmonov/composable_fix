@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 ADB=${COMPOSABLEFIX_ADB:-$(command -v adb || echo "$HOME/Library/Android/sdk/platform-tools/adb")}
 
 git checkout demo-start -- android/tally
-rm -rf .composablefix/reports
+rm -rf android/.composablefix/reports
 
 (cd android && ./gradlew -q :tally:installDebug)
 # Forget the last open tab, so the app starts on Home.
