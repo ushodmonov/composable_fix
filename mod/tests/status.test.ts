@@ -47,7 +47,7 @@ function world(on: On) {
     return { text: e.text }
   })
   on('fs.write', async (_$, e) => {
-    if (e.path.endsWith('status.json')) statuses.push(JSON.parse(e.text))
+    if (e.path === '/project/.composablefix/status.json') statuses.push(JSON.parse(e.text))
     return { value: undefined }
   })
   on('tool.call', async () => ({ result: 'built and launched' }))
@@ -96,4 +96,20 @@ test('without a launch the fix is not on screen', async ($, on) => {
   await $.turn.complete({ ...turnEnd, reason: 'answer' })
 
   expect(statuses.at(-1)?.r1).toBe('stopped')
+})
+
+test('an install after the launch that made the report live keeps it live', async ($, on) => {
+  const { receiver, statuses, submission } = world(on)
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  receiver.send(report)
+  await submission
+  await until(() => statuses.at(-1)?.r1 === 'fixing')
+
+  await $.tool.call({ tool: 'Bash', command: 'cd android && ./gradlew :tally:installDebug' })
+  receiver.send({ type: 'launched' })
+  await until(() => statuses.at(-1)?.r1 === 'live')
+  await $.tool.call({ tool: 'Bash', command: './gradlew :tally:installDebug -q' })
+  await $.turn.complete({ ...turnEnd, reason: 'answer' })
+
+  expect(statuses.map(all => all.r1)).toEqual(['queued', 'fixing', 'rebuilding', 'live', 'live', 'live'])
 })

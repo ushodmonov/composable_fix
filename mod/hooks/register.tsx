@@ -40,11 +40,15 @@ function relative(path: string) {
   return cwd && path.startsWith(cwd + '/') ? path.slice(cwd.length + 1) : path
 }
 
-/** Changes one report, then publishes every status for the app to poll. */
+/**
+ * Changes one report, then publishes every status for the app to poll. The file is the session's
+ * folder's, where the receiver reads it: a relative path would follow the shell, and Claude runs
+ * Gradle after `cd android`.
+ */
 async function patch($: EngineInterface, id: string, change: (report: FixReport) => FixReport) {
   const list = await update($, reports, all => all.map(one => (one.id === id ? change(one) : one)))
   const statuses = Object.fromEntries(list.map(one => [one.id, one.status]))
-  await $.fs.write(STATUS_FILE, JSON.stringify(statuses))
+  await $.fs.write(`${cwd}/${STATUS_FILE}`, JSON.stringify(statuses))
 }
 
 async function accept($: EngineInterface, incoming: Incoming) {
@@ -167,7 +171,9 @@ export const register: Register = on => {
     }
 
     if (e.tool === 'Bash' && isInstall(e.command)) {
-      await patch($, id, one => ({ ...one, status: 'rebuilding' }))
+      // A report already live stays live: an install after the launch that showed the fix (to
+      // check the build, say) does not take it off the screen.
+      await patch($, id, one => (one.status === 'live' ? one : { ...one, status: 'rebuilding' }))
       const ran = await next(e)
       // A launch during the call has marked the report live; a failed call leaves it fixing.
       if (ran.deny !== undefined || ran.isError === true) {
