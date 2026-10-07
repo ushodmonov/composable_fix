@@ -32,7 +32,7 @@ claude plugin marketplace add ushodmonov/composable_fix
 claude plugin install composablefix@composablefix
 ```
 
-The mod loads in every Claude Code session from then on. It starts its receiver on `127.0.0.1:4747` when a session starts, and stops it when the session ends. WidgetFix's mod listens on the same port, so enable one of the two in a session.
+The mod loads in every Claude Code session from then on. Each session starts a receiver when it starts and stops it when it ends, but an app's reports only go to the session opened in that app's project: see [Several projects](#several-projects). WidgetFix's mod uses the same port, 4747, so enable one of the two.
 
 ### 2. The library
 
@@ -155,18 +155,31 @@ The app looks for the receiver at `127.0.0.1:4747` on its own device, then at `1
 
 The receiver only maps the port once an adb server is running, and never starts one. With several devices, it tells which one sent a report by the app's process id.
 
+## Several projects
+
+Reports go to the session opened in the app's project, so several projects can be open at once, each with its own app and its own `claude`. The app sends everything to `127.0.0.1:4747`. The first session's receiver takes that port and becomes the hub; every receiver, the hub's included, also listens on a port of its own and registers with the hub. For each request the hub asks the sessions, newest first, whether the app is their project's: whether the project's Gradle files declare its application id (with or without a suffix such as `.debug`) or its namespace, or its sources are in its package. The first that says yes gets the request. So:
+
+- a session opened in a folder without the app receives nothing, and leaves no `.composablefix/` behind;
+- of two sessions in the same project, the newer one receives the reports;
+- when the hub's session ends, another session's receiver takes the port over within a few seconds.
+
+An app that no open session claims gets no answer, and its banner says Claude Code is not listening.
+
 ## How it works
 
 ```
-app (ComposableFix) ──POST /report──▶ receiver (node, 127.0.0.1:4747) ──adb uiautomator dump──▶ device
-        ▲                                    │ one JSON line per report
-        │ POST /launched, GET /status        ▼
+app (ComposableFix) ──POST /report?app=…──▶ hub: 127.0.0.1:4747, one session's receiver
+        ▲                                          │ to the session of the app's project
+        │                                          ▼
+        │ POST /launched, GET /status        receiver (node) ──adb uiautomator dump──▶ device
+        │                                          │ one JSON line per report
+        │                                          ▼
         └──── .composablefix/status.json ◀── the mod: prompt, Fix queue pane, statuses
 ```
 
 The app sends a report once its composer has closed, and the receiver reads the screen's accessibility tree before it answers; until then the app takes no new long press. The receiver picks the deepest named element under the touch point and the labels beside it in the same row, saves the whole tree as `.composablefix/reports/<id>.ax.json`, and finds the device and the marked element's source file. The mod submits the prompt and adds a section to the system prompt that explains the `[fix …]` line. It writes every report's status to `.composablefix/status.json`, which the app polls.
 
-One session receives reports at a time: a session started later takes port 4747 over. `COMPOSABLEFIX_PORT` moves the receiver, but the app always sends to 4747.
+`COMPOSABLEFIX_PORT` moves the hub's port, but the app always sends to 4747.
 
 ## Example: Tally
 
@@ -189,7 +202,7 @@ Each one is a one-line slip in the code. The reset script restores them from the
 
 ## Development
 
-`scripts/test.sh` runs every check: `claude plugin validate` on the marketplace and the mod, the mod's tests (`claude plugin test mod`), the receiver's tests (`node --test`, against a dump of Tally's Home screen), the library's unit tests, and Tally's debug and release builds.
+`scripts/test.sh` runs every check: `claude plugin validate` on the marketplace and the mod, the mod's tests (`claude plugin test mod`), the receiver's tests (`node --test`: the lookup against a dump of Tally's Home screen, and the hub's routing), the library's unit tests, and Tally's debug and release builds.
 
 ## License
 

@@ -1,19 +1,21 @@
 // Receives fix reports from an app's ComposableFix debug build and hands them to the
 // composablefix mod: one JSON line on stdout per event. Started by the mod with
-// $.process.spawn and killed with it. One receiver owns the port at a time: a newer
-// one asks the older one to leave. No dependencies beside adb, which is optional: it
+// $.process.spawn and killed with it. Every session runs one, on a port of its own; the one
+// that holds the apps' port (4747) is also the hub, which hands each request to the session
+// opened in the app's project (hub.mjs). No dependencies beside adb, which is optional: it
 // tells which element a report's touch landed on, and lets a device reach this Mac.
 import { createServer } from 'node:http'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join as joinPath } from 'node:path'
 
 import * as android from './android.mjs'
+import { createHub, join } from './hub.mjs'
 import { elementAt } from './inspect.mjs'
 
 const PORT = Number(process.env.COMPOSABLEFIX_PORT ?? 4747)
-const dir = join(process.cwd(), '.composablefix')
-const reportsDir = join(dir, 'reports')
-const statusFile = join(dir, 'status.json')
+const dir = joinPath(process.cwd(), '.composablefix')
+const reportsDir = joinPath(dir, 'reports')
+const statusFile = joinPath(dir, 'status.json')
 // Tells this run's report ids apart from an earlier run's.
 const run = Date.now().toString(36)
 let count = 0
@@ -67,13 +69,14 @@ async function lookUp(id, report) {
   const tree = await withAdb(path => android.describeScreen(path, serial))
   if (tree === null) return null
   try {
-    writeFileSync(join(reportsDir, `${id}.ax.json`), JSON.stringify(tree))
+    writeFileSync(joinPath(reportsDir, `${id}.ax.json`), JSON.stringify(tree))
   } catch {}
   // The tree is in pixels; a row's reach is 12dp.
   return elementAt(tree, report.touch, { slop: 12 * (report.density ?? 1) })
 }
 
 const findSource = android.sourceFinder(process.cwd())
+const isOurs = android.appFinder(process.cwd())
 
 /**
  * A report as the mod reads it: the device it came from, and its `.fixable` file as a path in
@@ -114,8 +117,25 @@ const reply = (res, code, body) => {
   res.end(text)
 }
 
+// The folder is made, and the previous run's reports cleared, when the first report arrives: a
+// session in a folder without the app leaves no trace in it. A previous run's statuses are
+// cleared at once, so a launch never follows a report of a session gone.
+let prepared = false
+function prepare() {
+  if (prepared) return
+  prepared = true
+  rmSync(reportsDir, { recursive: true, force: true })
+  mkdirSync(reportsDir, { recursive: true })
+}
+rmSync(statusFile, { force: true })
+
+/** This session's own server: the hub forwards to it the requests of the apps of its project. */
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`)
+
+  if (req.method === 'GET' && url.pathname === '/owns') {
+    return reply(res, 200, { owns: isOurs(url.searchParams.get('app')) })
+  }
 
   if (req.method === 'GET' && url.pathname === '/status') {
     const id = url.searchParams.get('id')
@@ -138,11 +158,12 @@ const server = createServer((req, res) => {
     req.on('end', () => {
       try {
         const { screenshotPNG, ...sent } = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        prepare()
         const id = `r${++count}`
         let screenshot = null
         if (screenshotPNG) {
-          screenshot = join('.composablefix', 'reports', `${id}.png`)
-          writeFileSync(join(process.cwd(), screenshot), Buffer.from(screenshotPNG, 'base64'))
+          screenshot = joinPath('.composablefix', 'reports', `${id}.png`)
+          writeFileSync(joinPath(process.cwd(), screenshot), Buffer.from(screenshotPNG, 'base64'))
         }
         const report = located(sent).catch(() => sent)
         // The answer waits for the lookup: until it comes the app takes no new long press,
@@ -159,40 +180,61 @@ const server = createServer((req, res) => {
     return
   }
 
-  // A newer session's receiver asks for the port.
-  if (req.method === 'POST' && url.pathname === '/shutdown') {
-    reply(res, 200, { run })
-    emit({ type: 'error', message: 'a newer session took over the reports' })
-    server.close(() => process.exit(0))
-    server.closeAllConnections()
-    return
-  }
-
   reply(res, 404, { error: 'not found' })
 })
 
-// The port is taken by an earlier receiver: one left behind by a closed session, or the
-// one a reload of the mod is replacing. Ask it to leave, then try again.
-let attempts = 0
-server.on('error', error => {
-  if (error.code === 'EADDRINUSE' && ++attempts <= 10) {
-    fetch(`http://127.0.0.1:${PORT}/shutdown`, { method: 'POST' })
-      .catch(() => {})
-      .finally(() => setTimeout(() => server.listen(PORT, '127.0.0.1'), 300))
+// What this receiver is to the others: the hub, a session registered with the hub, or neither
+// yet. Checked every few seconds, so when the hub's session ends another receiver takes its place.
+let role = null
+let hub = null
+let blocked = false
+
+function becomes(next) {
+  if (role === next) return
+  role = next
+  emit({ type: 'ready', port: PORT, role })
+}
+
+async function takePart(own) {
+  if (hub !== null) {
+    hub.register(own, process.cwd())
     return
   }
-  emit({ type: 'error', message: error.code === 'EADDRINUSE' ? `port ${PORT} is in use` : String(error) })
+  try {
+    await join(PORT, own, process.cwd())
+    blocked = false
+    becomes('member')
+  } catch (error) {
+    if (error.code === 'NOT_A_HUB') {
+      if (!blocked) emit({ type: 'error', message: `port ${PORT} is held by something else: another tool's receiver, or an older one` })
+      blocked = true
+      return
+    }
+    if (error.code !== 'ECONNREFUSED') return
+    // Nothing holds the port: take it.
+    const candidate = createHub()
+    candidate.server.once('error', () => {})
+    candidate.server.listen(PORT, '127.0.0.1', () => {
+      hub = candidate
+      hub.register(own, process.cwd())
+      blocked = false
+      becomes('hub')
+      // Android devices come and go; each one that arrives gets the port mapped.
+      const upkeep = () => keepReversed().catch(error => process.stderr.write(`adb reverse: ${error.message}\n`))
+      void upkeep()
+      setInterval(upkeep, 5_000).unref()
+    })
+  }
+}
+
+server.on('error', error => {
+  emit({ type: 'error', message: String(error) })
   process.exit(1)
 })
 
-server.listen(PORT, '127.0.0.1', () => {
-  // Only the receiver that holds the port may clear the previous run's files.
-  rmSync(dir, { recursive: true, force: true })
-  mkdirSync(reportsDir, { recursive: true })
-  emit({ type: 'ready', port: PORT })
-
-  // Android devices come and go; each one that arrives gets the port mapped.
-  const upkeep = () => keepReversed().catch(error => process.stderr.write(`adb reverse: ${error.message}\n`))
-  void upkeep()
-  setInterval(upkeep, 5_000).unref()
+server.listen(0, '127.0.0.1', () => {
+  const own = server.address().port
+  const tick = () => takePart(own).catch(error => process.stderr.write(`hub: ${error.message}\n`))
+  void tick()
+  setInterval(tick, 3_000).unref()
 })

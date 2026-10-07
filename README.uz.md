@@ -32,7 +32,7 @@ claude plugin marketplace add ushodmonov/composable_fix
 claude plugin install composablefix@composablefix
 ```
 
-Shundan so'ng mod har bir Claude Code sessiyasida yuklanadi. Sessiya boshlanganda u o'z receiver'ini `127.0.0.1:4747` manzilida ishga tushiradi, sessiya tugaganda esa uni to'xtatadi. WidgetFix mod'i ham shu portni tinglaydi, shuning uchun bitta sessiyada ikkalasidan bittasini yoqing.
+Shundan so'ng mod har bir Claude Code sessiyasida yuklanadi. Har bir sessiya boshlanganda o'z receiver'ini ishga tushiradi, tugaganda esa to'xtatadi, lekin ilovaning hisobotlari faqat o'sha ilova loyihasida ochilgan sessiyaga boradi: [Bir nechta loyiha](#bir-nechta-loyiha) bo'limiga qarang. WidgetFix mod'i ham xuddi shu 4747-portdan foydalanadi, shuning uchun ikkalasidan bittasini yoqing.
 
 ### 2. Kutubxona
 
@@ -155,18 +155,31 @@ Ilova receiver'ni avval o'z qurilmasidagi `127.0.0.1:4747` manzilidan, so'ng `10
 
 Receiver portni faqat adb server ishlab turgan bo'lsa ulaydi va uni hech qachon o'zi ishga tushirmaydi. Bir nechta qurilma bo'lsa, hisobotni qaysi biri yuborganini ilova jarayonining id'si (pid) orqali aniqlaydi.
 
+## Bir nechta loyiha
+
+Hisobotlar ilova loyihasida ochilgan sessiyaga boradi, shuning uchun bir vaqtda bir nechta loyiha ochiq bo'lishi mumkin: har birining o'z ilovasi va o'z `claude` sessiyasi bo'ladi. Ilova hamma narsani `127.0.0.1:4747` manziliga yuboradi. Birinchi sessiyaning receiver'i shu portni egallaydi va hub bo'ladi; har bir receiver, jumladan hub'ning o'zi ham, yana o'z portida tinglaydi va hub'da ro'yxatdan o'tadi. Hub har bir so'rovda sessiyalardan, eng yangisidan boshlab, ilova ularning loyihasiga tegishlimi, deb so'raydi: loyihaning Gradle fayllarida ilovaning application id'si (`.debug` kabi qo'shimcha bilan yoki usiz) yoki namespace'i e'lon qilinganmi, yoxud manba kodi ilova paketida joylashganmi. Birinchi "ha" degan sessiya so'rovni oladi. Natijada:
+
+- ilova loyihasi bo'lmagan papkada ochilgan sessiya hech narsa olmaydi va o'zidan keyin `.composablefix/` papkasini qoldirmaydi;
+- bitta loyihadagi ikki sessiyadan hisobotlarni yangirog'i oladi;
+- hub'ning sessiyasi tugaganda, bir necha soniya ichida boshqa sessiyaning receiver'i portni egallaydi.
+
+Hech bir ochiq sessiya o'ziniki deb bilmagan ilova javob olmaydi va uning banneri Claude Code tinglamayotganini aytadi.
+
 ## Qanday ishlaydi
 
 ```
-app (ComposableFix) ──POST /report──▶ receiver (node, 127.0.0.1:4747) ──adb uiautomator dump──▶ device
-        ▲                                    │ one JSON line per report
-        │ POST /launched, GET /status        ▼
+app (ComposableFix) ──POST /report?app=…──▶ hub: 127.0.0.1:4747, one session's receiver
+        ▲                                          │ to the session of the app's project
+        │                                          ▼
+        │ POST /launched, GET /status        receiver (node) ──adb uiautomator dump──▶ device
+        │                                          │ one JSON line per report
+        │                                          ▼
         └──── .composablefix/status.json ◀── the mod: prompt, Fix queue pane, statuses
 ```
 
 Ilova hisobotni izoh oynasi yopilgandan keyin yuboradi, receiver esa javob berishdan oldin ekranning accessibility daraxtini o'qiydi; shu paytgacha ilova yangi bosib turishni qabul qilmaydi. Receiver bosilgan nuqta ostidagi eng chuqur nomlangan elementni va o'sha qatordagi yonidagi yozuvlarni tanlaydi, butun daraxtni `.composablefix/reports/<id>.ax.json` sifatida saqlaydi hamda qurilmani va belgilangan elementning manba faylini topadi. Mod prompt'ni yuboradi va system prompt'ga `[fix …]` qatorini tushuntiradigan bo'lim qo'shadi. Mod har bir hisobotning holatini `.composablefix/status.json` fayliga yozadi, ilova esa bu faylni muntazam so'rab turadi (poll qiladi).
 
-Bir vaqtning o'zida faqat bitta sessiya hisobot qabul qiladi: keyinroq boshlangan sessiya 4747-portni o'ziga oladi. `COMPOSABLEFIX_PORT` receiver portini o'zgartiradi, lekin ilova doim 4747-portga yuboradi.
+`COMPOSABLEFIX_PORT` hub portini o'zgartiradi, lekin ilova doim 4747-portga yuboradi.
 
 ## Misol: Tally
 
@@ -189,7 +202,7 @@ Har biri koddagi bir qatorlik kichik xato. Reset skripti ularni `demo-start` git
 
 ## Ishlab chiqish
 
-`scripts/test.sh` barcha tekshiruvlarni ishga tushiradi: marketplace va mod uchun `claude plugin validate`, mod testlari (`claude plugin test mod`), receiver testlari (`node --test`, Tally'ning Home ekranidan olingan dump bilan), kutubxonaning unit testlari hamda Tally'ning debug va release build'lari.
+`scripts/test.sh` barcha tekshiruvlarni ishga tushiradi: marketplace va mod uchun `claude plugin validate`, mod testlari (`claude plugin test mod`), receiver testlari (`node --test`: Tally'ning Home ekranidan olingan dump bo'yicha qidiruv va hub'ning yo'naltirishi), kutubxonaning unit testlari hamda Tally'ning debug va release build'lari.
 
 ## Litsenziya
 

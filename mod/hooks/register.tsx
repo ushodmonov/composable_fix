@@ -16,7 +16,7 @@ const receiver = atom({ plugin: 'composablefix', key: 'receiver' } as const, {
 const now = atom({ plugin: 'composablefix', key: 'now' } as const, 0)
 
 type ReceiverEvent =
-  | { type: 'ready'; port: number }
+  | { type: 'ready'; port: number; role: 'hub' | 'member' }
   | { type: 'error'; message: string }
   | { type: 'notice'; message: string }
   | { type: 'launched' }
@@ -102,7 +102,9 @@ async function listen($: EngineInterface) {
       for (const line of lines.filter(Boolean)) {
         const event = JSON.parse(line) as ReceiverEvent
         if (event.type === 'ready') {
-          await update($, receiver, (): Receiver => ({ state: 'listening', detail: `127.0.0.1:${event.port}` }))
+          // The hub holds the port; a member gets its project's reports through it.
+          const detail = `127.0.0.1:${event.port}${event.role === 'member' ? ', shared' : ''}`
+          await update($, receiver, (): Receiver => ({ state: 'listening', detail }))
         } else if (event.type === 'error') {
           await update($, receiver, (): Receiver => ({ state: 'failed', detail: event.message }))
           $.ui.toast(`composablefix: ${event.message}`)

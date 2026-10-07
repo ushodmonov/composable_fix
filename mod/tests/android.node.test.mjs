@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 
-import { parseHierarchy, sourceFinder } from '../server/android.mjs'
+import { appFinder, parseHierarchy, sourceFinder } from '../server/android.mjs'
 
 test('a node is named by its description, its text, and its id without the package', () => {
   const [root] = parseHierarchy(
@@ -53,6 +53,33 @@ test("a mark's file is found by its package's folders, else by its name", () => 
     // A file added after the first lookup is found too.
     write('app/src/main/kotlin/com/example/New.kt')
     assert.equal(find('com/example/New.kt'), join(root, 'app/src/main/kotlin/com/example/New.kt'))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('an app is the project that declares its id, its namespace, or holds its package', () => {
+  const root = mkdtempSync(join(tmpdir(), 'composablefix-'))
+  const write = (path, text = '') => {
+    mkdirSync(dirname(join(root, path)), { recursive: true })
+    writeFileSync(join(root, path), text)
+  }
+  write('app/build.gradle.kts', 'android {\n  namespace = "com.example.shop"\n  defaultConfig {\n    applicationId = "com.example.shop.app"\n  }\n}\n')
+  write('legacy/build.gradle', "android {\n    defaultConfig {\n        applicationId 'org.legacy'\n    }\n}\n")
+  write('feature/src/main/kotlin/com/example/feature/Screen.kt')
+
+  try {
+    const isOurs = appFinder(root)
+    assert.equal(isOurs('com.example.shop.app'), true)
+    // A build type's suffix keeps the id.
+    assert.equal(isOurs('com.example.shop.app.debug'), true)
+    assert.equal(isOurs('com.example.shop'), true)
+    assert.equal(isOurs('org.legacy'), true)
+    assert.equal(isOurs('com.example.feature'), true)
+    // Nothing that only shares a beginning.
+    assert.equal(isOurs('com.example'), false)
+    assert.equal(isOurs('com.example.shopping'), false)
+    assert.equal(isOurs('dev.composablefix.tally'), false)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

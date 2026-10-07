@@ -4,7 +4,7 @@
 // finds a `.fixable` call's source file, which the app knows only by its package. No
 // dependencies beside adb itself.
 import { execFile } from 'node:child_process'
-import { accessSync, constants, readdirSync } from 'node:fs'
+import { accessSync, constants, readdirSync, readFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { homedir } from 'node:os'
 import { delimiter, join, sep } from 'node:path'
@@ -144,10 +144,30 @@ export function parseHierarchy(xml) {
 
 // Folders that hold no sources of the app's own.
 const SKIPPED = new Set(['build', 'node_modules', '.git', '.gradle', '.idea', '.kotlin', '.composablefix'])
+// A session opened in a big folder (a home folder, say) is not walked whole.
+const MOST_ENTRIES = 50_000
 
-/** Every Kotlin and Java source under the folder, by file name. */
-function indexSources(root) {
-  const index = new Map()
+const APPLICATION_ID = /\bapplicationId\s*(?:=|\()?\s*["']([\w.]+)["']/g
+const NAMESPACE = /\bnamespace\s*(?:=|\()?\s*["']([\w.]+)["']/g
+const MANIFEST_PACKAGE = /<manifest\b[^>]*\bpackage="([\w.]+)"/g
+
+/**
+ * What a project holds, from one walk: its Kotlin and Java sources by file name, the application
+ * ids and namespaces its Gradle files declare (and its manifests' packages), and the packages its
+ * sources are in, from their folders under `src/<set>/java|kotlin`.
+ */
+export function indexProject(root) {
+  const sources = new Map()
+  const applicationIds = new Set()
+  const namespaces = new Set()
+  const packages = new Set()
+  let entriesLeft = MOST_ENTRIES
+
+  const collect = (path, pattern, into) => {
+    try {
+      for (const [, id] of readFileSync(path, 'utf8').matchAll(pattern)) into.add(id)
+    } catch {}
+  }
   const walk = dir => {
     let entries = []
     try {
@@ -156,40 +176,79 @@ function indexSources(root) {
       return
     }
     for (const entry of entries) {
+      if (--entriesLeft < 0) return
+      const path = join(dir, entry.name)
       if (entry.isDirectory()) {
-        if (!SKIPPED.has(entry.name) && !entry.name.startsWith('.')) walk(join(dir, entry.name))
+        if (!SKIPPED.has(entry.name) && !entry.name.startsWith('.')) walk(path)
       } else if (/\.(kt|java)$/.test(entry.name)) {
-        index.set(entry.name, [...(index.get(entry.name) ?? []), join(dir, entry.name)])
+        sources.set(entry.name, [...(sources.get(entry.name) ?? []), path])
+        const folders = dir.split(sep)
+        const at = folders.findLastIndex((name, i) => (name === 'java' || name === 'kotlin') && folders[i - 2] === 'src')
+        if (at >= 0) packages.add(folders.slice(at + 1).join('.'))
+      } else if (entry.name === 'build.gradle' || entry.name === 'build.gradle.kts') {
+        collect(path, APPLICATION_ID, applicationIds)
+        collect(path, NAMESPACE, namespaces)
+      } else if (entry.name === 'AndroidManifest.xml') {
+        collect(path, MANIFEST_PACKAGE, namespaces)
       }
     }
   }
   walk(root)
-  return index
+  return { sources, applicationIds, namespaces, packages }
+}
+
+/** An index of the project that is built on first use, and again on a miss, at most every `wait` ms. */
+function projectIndex(root, wait) {
+  let index = null
+  let builtAt = 0
+  return {
+    get: () => {
+      if (index === null) {
+        index = indexProject(root)
+        builtAt = Date.now()
+      }
+      return index
+    },
+    rebuild: () => {
+      if (Date.now() - builtAt < wait) return false
+      index = indexProject(root)
+      builtAt = Date.now()
+      return true
+    },
+  }
+}
+
+/**
+ * Whether an app is the project's: its package is an application id the project declares (with
+ * a suffix such as `.debug` or without), one of its namespaces, or a package its sources are in.
+ * The hub asks every session about every app it has not placed yet, so a miss walks the project
+ * again at most every ten seconds.
+ */
+export function appFinder(root) {
+  const index = projectIndex(root, 10_000)
+  const owns = app => {
+    const { applicationIds, namespaces, packages } = index.get()
+    return (
+      [...applicationIds].some(id => app === id || app.startsWith(id + '.')) || namespaces.has(app) || packages.has(app)
+    )
+  }
+  return app => Boolean(app) && (owns(app) || (index.rebuild() && owns(app)))
 }
 
 /**
  * The path of a `.fixable` call's file, from what the app knows of it: the package's folders and
  * the file's name (`com/example/home/Card.kt`). The file whose path ends that way, else the only
- * file of that name; else the name as the app gave it. The index is built once, and again when a
- * file is not in it.
+ * file of that name; else the name as the app gave it.
  */
 export function sourceFinder(root) {
-  let index = null
+  const index = projectIndex(root, 0)
   const find = file => {
-    const name = file.split('/').pop()
-    const candidates = index.get(name) ?? []
+    const candidates = index.get().sources.get(file.split('/').pop()) ?? []
     const suffix = sep + file.split('/').join(sep)
     return candidates.find(path => path.endsWith(suffix)) ?? (candidates.length === 1 ? candidates[0] : null)
   }
-
   return file => {
     if (!file) return file
-    index ??= indexSources(root)
-    let found = find(file)
-    if (found === null) {
-      index = indexSources(root)
-      found = find(file)
-    }
-    return found ?? file
+    return find(file) ?? (index.rebuild() ? find(file) : null) ?? file
   }
 }

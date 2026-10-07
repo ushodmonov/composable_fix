@@ -33,10 +33,12 @@ internal class FixStatus(
 )
 
 /**
- * Talks to the receiver the composablefix mod runs on this Mac. The receiver keeps `adb reverse` set for
- * every device, so the app finds it on its own loopback; an emulator also reaches the Mac's
- * loopback at 10.0.2.2. HTTP goes over a plain socket: the platform's clients refuse cleartext
- * unless the app's network security config allows it, and the receiver is only ever local.
+ * Talks to the receiver the composablefix mod runs on this Mac. The receiver keeps `adb reverse`
+ * set for every device, so the app finds it on its own loopback; an emulator also reaches the
+ * Mac's loopback at 10.0.2.2. Every request names the app, by which the receiver holding the port
+ * hands it to the Claude Code session opened in the app's project. HTTP goes over a plain socket:
+ * the platform's clients refuse cleartext unless the app's network security config allows it,
+ * and the receiver is only ever local.
  */
 internal object ComposableFixClient {
     private const val PORT = 4747
@@ -75,18 +77,18 @@ internal object ComposableFixClient {
         target.screenshot.await()?.let { body.put("screenshotPNG", Base64.encodeToString(it, Base64.NO_WRAP)) }
 
         // The receiver answers once it has read the screen's accessibility tree: a second or two.
-        val answer = request("POST", "/report", body.toString().toByteArray(), timeoutMillis = 20_000)
+        val answer = request("POST", "/report?app=${context.packageName}", body.toString().toByteArray(), timeoutMillis = 20_000)
         return JSONObject(answer).getString("id")
     }
 
-    /** The status of one report. */
-    suspend fun status(id: String): FixStatus = statusFrom(request("GET", "/status?id=$id"))
+    /** The status of one of the app's reports. */
+    suspend fun status(app: String, id: String): FixStatus = statusFrom(request("GET", "/status?id=$id&app=$app"))
 
     /**
      * Says the app has launched, and returns the status of the report Claude is working on,
      * else of the newest one.
      */
-    suspend fun launched(): FixStatus = statusFrom(request("POST", "/launched", ByteArray(0)))
+    suspend fun launched(app: String): FixStatus = statusFrom(request("POST", "/launched?app=$app", ByteArray(0)))
 
     /** Lets the receiver find the device among those adb sees, and the prompt name the app. */
     private fun androidApp(context: Context): JSONObject {

@@ -257,7 +257,7 @@ internal class FixSession private constructor() {
         if (hasAnnounced) return
         hasAnnounced = true
 
-        val latest = attempt { ComposableFixClient.launched() } ?: return
+        val latest = attempt { ComposableFixClient.launched(context.packageName) } ?: return
         val id = latest.id ?: return
         when (latest.status) {
             null, "stopped" -> Unit
@@ -277,7 +277,7 @@ internal class FixSession private constructor() {
     private suspend fun follow(id: String) {
         while (true) {
             delay(1_000)
-            val latest = attempt { ComposableFixClient.status(id) } ?: continue
+            val latest = attempt { ComposableFixClient.status(context.packageName, id) } ?: continue
 
             when (latest.status) {
                 null -> continue
